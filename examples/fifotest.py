@@ -63,7 +63,7 @@ def dataCallback(status, samplesAvail, data):
     if (totalSamples > 1000):
         after = time.perf_counter()
         delta = after-before
-        print("time take for {0:d} loops is {1:3.2f}, {2:d} samples at {3:3.2f} sps".format(loops, delta, totalSamples, totalSamples/delta))
+        print("time take for {0:d} loops is {1:3.2f}, {2:d} samples at {3:3.2f} sps".format(loops, delta, totalSamples, (totalSamples-1)/delta))
         sensor.reset()
         GPIO.remove_event_detect(pin)
         keepGoing = False
@@ -79,9 +79,8 @@ sensor.enableFifoBuffer(30, pin, dataCallback)
 
 # Main loop to print the acceleration and orientation every second.
 while keepGoing:
-    time.sleep(1.1)
+    time.sleep(0.1)
 
-delta = after-before
-print("DONE: time take for {0:d} reads is {1:3.2f}, {2:d} samples at {3:3.2f} sps".format(loops, delta, totalSamples, (totalSamples-1)/delta))
+print("DONE")
 
 GPIO.remove_event_detect(pin)
