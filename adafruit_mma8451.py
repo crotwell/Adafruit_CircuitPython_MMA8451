@@ -28,6 +28,8 @@ examples/simpletest.py for a demo of the usage.
 
 * Author(s): Tony DiCola
 """
+import time
+
 try:
     import struct
 except ImportError:
@@ -37,6 +39,7 @@ from micropython import const
 
 import adafruit_bus_device.i2c_device as i2c_device
 
+import RPi.GPIO as GPIO
 
 __version__ = "0.0.0-auto.0"
 __repo__ = "https://github.com/adafruit/Adafruit_CircuitPython_MMA8451.git"
@@ -45,7 +48,9 @@ __repo__ = "https://github.com/adafruit/Adafruit_CircuitPython_MMA8451.git"
 #pylint: disable=bad-whitespace
 # Internal constants:
 _MMA8451_DEFAULT_ADDRESS   = const(0x1D)
+_MMA8451_REG_F_STATUS      = const(0x00)
 _MMA8451_REG_OUT_X_MSB     = const(0x01)
+_MMA8451_REG_FIFO_SETUP    = const(0x09);
 _MMA8451_REG_SYSMOD        = const(0x0B)
 _MMA8451_REG_WHOAMI        = const(0x0D)
 _MMA8451_REG_XYZ_DATA_CFG  = const(0x0E)
@@ -78,6 +83,12 @@ DATARATE_50HZ    = 0b100  #   50Hz
 DATARATE_12_5HZ  = 0b101  # 12.5Hz
 DATARATE_6_25HZ  = 0b110  # 6.25Hz
 DATARATE_1_56HZ  = 0b111  # 1.56Hz
+
+FIFO_MODE_CIRCULAR = 0b01000000
+FIFO_MODE_FILL     = 0b10000000
+FIFO_MODE_TRIGGER  = 0b11000000
+INT_CFG_FIFO  = 0b01000000
+INT_EN_FIFO  = 0b01000000
 #pylint: enable=bad-whitespace
 
 
@@ -93,6 +104,8 @@ class MMA8451:
     # Note this is NOT thread-safe or re-entrant by design!
     _BUFFER = bytearray(6)
 
+    _FIFO_BUFFER = bytearray(192)
+
     def __init__(self, i2c, *, address=_MMA8451_DEFAULT_ADDRESS):
         self._device = i2c_device.I2CDevice(i2c, address)
         # Verify device ID.
@@ -100,6 +113,7 @@ class MMA8451:
             raise RuntimeError('Failed to find MMA8451, check wiring!')
         # Reset and wait for chip to be ready.
         self._write_u8(_MMA8451_REG_CTRL_REG2, 0x40)
+        time.sleep(0.01)
         while self._read_u8(_MMA8451_REG_CTRL_REG2) & 0x40 > 0:
             pass
         # Enable 4G range.
@@ -123,8 +137,10 @@ class MMA8451:
         # recommendation as it was not designed for bytearrays which may not
         # follow that semantic.  Ignore pylint's superfulous complaint.
         assert len(buf) > 0  #pylint: disable=len-as-condition
+        assert count is None or count <= len(buf)
         if count is None:
             count = len(buf)
+        #print("_read_into add={0:d} buf len={1:d} count={2:d}".format(address, len(buf), count))
         with self._device as i2c:
             i2c.write_then_readinto(bytes([address & 0xFF]), buf,
                                     in_end=count, stop=False)
@@ -181,6 +197,77 @@ class MMA8451:
         ctl1 &= ~(_MMA8451_DATARATE_MASK << 3)              # mask off bits
         ctl1 |= (val << 3)
         self._write_u8(_MMA8451_REG_CTRL_REG1, ctl1 | 0x01) # activate
+
+    def reset(self):
+        reg2 = self._read_u8(_MMA8451_REG_CTRL_REG2)
+        # reset bit, keep all others same
+        self._write_u8(_MMA8451_REG_CTRL_REG2, reg2 & 0x40)
+        while self._read_u8(_MMA8451_REG_CTRL_REG2) & 0x40 > 0:
+            pass
+
+    def enableFifoBuffer(self, watermark, pin, callback):
+        assert 0 < watermark <= 32
+        self._fifoCallback = callback
+        # enable interupt
+        self.reset()
+        GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        GPIO.add_event_detect(pin, GPIO.FALLING, callback=self._internalFifoCallback, bouncetime=70)
+
+        self._write_u8(_MMA8451_REG_CTRL_REG1, 0x00) # deactivate
+        self._write_u8(_MMA8451_REG_FIFO_SETUP, FIFO_MODE_CIRCULAR | watermark)
+        self._write_u8(_MMA8451_REG_CTRL_REG4, INT_EN_FIFO)
+        self._write_u8(_MMA8451_REG_CTRL_REG5, INT_CFG_FIFO)
+        reg1 = self._read_u8(_MMA8451_REG_CTRL_REG1)
+        self._write_u8(_MMA8451_REG_CTRL_REG1, reg1 | 0x01)
+        print("FIFO mode enabled status: {0:b} fifo: {1:b}".format(self._read_u8(_MMA8451_REG_F_STATUS), self._read_u8(_MMA8451_REG_FIFO_SETUP)))
+
+    def _internalFifoCallback(self, channel):
+        status, samplesAvail, data = self.dataBuffer()
+        self._fifoCallback(status, samplesAvail, data)
+
+    @property
+    def fifoStatus(self):
+        return self._read_u8(_MMA8451_REG_F_STATUS)
+
+    def dataBuffer(self, samples=32):
+        assert 0 < samples <= 32
+        status = self._read_u8(_MMA8451_REG_F_STATUS)
+        statusRedo = self._read_u8(_MMA8451_REG_F_STATUS)
+        #print("dataBuffer status: {0:b}  {1:b}".format(status, statusRedo))
+        samplesAvail = status & 0x3F
+        if samplesAvail > 32:
+            samplesAvail = 32
+        #print("sampleAvail: {0:d} {0:b} & {1:b}".format(samplesAvail, 0x3F))
+        numBytes = samplesAvail*2*3
+        bytesRead = self._read_into(_MMA8451_REG_OUT_X_MSB, self._FIFO_BUFFER, count=numBytes)
+        return status, samplesAvail, self._FIFO_BUFFER.copy()[0:numBytes]
+
+
+    @property
+    def configuration(self):
+        out = []
+        out.append(self._read_u8(_MMA8451_REG_F_STATUS))
+        out.append(self._read_u8(_MMA8451_REG_CTRL_REG1))
+        out.append(self._read_u8(_MMA8451_REG_CTRL_REG2))
+        out.append(self._read_u8(_MMA8451_REG_CTRL_REG3))
+        out.append(self._read_u8(_MMA8451_REG_CTRL_REG4))
+        out.append(self._read_u8(_MMA8451_REG_CTRL_REG5))
+        return out
+
+    def demux(self, data):
+        count=0
+        outX = []
+        outY = []
+        outZ = []
+        sixBytes = data[0:6]
+        while count < len(data):
+            x, y, z = struct.unpack('>hhh', sixBytes)
+            outX.append(x >> 2)
+            outY.append(y >> 2)
+            outZ.append(z >> 2)
+            count += 6
+            sixBytes = data[count:count+6]
+        return outX, outY, outZ
 
     @property
     def acceleration(self):
