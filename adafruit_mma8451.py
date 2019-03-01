@@ -208,11 +208,14 @@ class MMA8451:
 
     def enableFifoBuffer(self, watermark, pin, callback):
         assert 0 < watermark <= 32
+        bouncetime = watermark
+        if bouncetime < 1:
+            bouncetime=1
         self._fifoCallback = callback
         # enable interupt
         self.reset()
         GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-        GPIO.add_event_detect(pin, GPIO.FALLING, callback=self._internalFifoCallback, bouncetime=70)
+        GPIO.add_event_detect(pin, GPIO.FALLING, callback=self._internalFifoCallback, bouncetime=bouncetime)
 
         self._write_u8(_MMA8451_REG_CTRL_REG1, 0x00) # deactivate
         self._write_u8(_MMA8451_REG_FIFO_SETUP, FIFO_MODE_CIRCULAR | watermark)
