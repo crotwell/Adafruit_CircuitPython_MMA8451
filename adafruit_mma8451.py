@@ -29,7 +29,7 @@ examples/simpletest.py for a demo of the usage.
 * Author(s): Tony DiCola
 """
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 try:
     import struct
@@ -226,7 +226,7 @@ class MMA8451:
         print("FIFO mode enabled status: {0:b} fifo: {1:b}".format(self._read_u8(_MMA8451_REG_F_STATUS), self._read_u8(_MMA8451_REG_FIFO_SETUP)))
 
     def _internalFifoCallback(self, channel):
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         status, samplesAvail, data = self.dataBuffer()
         if samplesAvail > 0:
             self._fifoCallback(now, status, samplesAvail, data)
