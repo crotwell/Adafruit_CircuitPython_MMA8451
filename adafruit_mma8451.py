@@ -239,8 +239,6 @@ class MMA8451:
     def dataBuffer(self, samples=32):
         assert 0 < samples <= 32
         status = self._read_u8(_MMA8451_REG_F_STATUS)
-        statusRedo = self._read_u8(_MMA8451_REG_F_STATUS)
-        #print("dataBuffer status: {0:b}  {1:b}".format(status, statusRedo))
         samplesAvail = status & 0x3F
         if samplesAvail > 32:
             samplesAvail = 32
